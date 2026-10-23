@@ -62,10 +62,10 @@ td[contenteditable]:focus{outline:2px solid var(--teal);background:#f0faf8}
       <span>갤러리에서<br>여러 장 한 번에</span>
     </label>
   </div>
-  <p class="tip">라벨의 QR코드가 잘 보이게 찍어주세요.</p>
+  <p class="tip">라벨 표가 화면에 꽉 차고 글자가 잘 보이게 찍어주세요.</p>
 
   <div class="bar">
-    <div class="stat" id="stat">사진을 올리면 QR을 읽어 표로 정리합니다.</div>
+    <div class="stat" id="stat">사진을 올리면 라벨을 읽어 표로 정리합니다.</div>
     <button class="clr" id="clr">비우기</button>
     <button class="go" id="xls" disabled>엑셀 다운로드</button>
     <button class="kakao" id="share" disabled>카톡으로 보내기</button>
@@ -78,65 +78,51 @@ td[contenteditable]:focus{outline:2px solid var(--teal);background:#f0faf8}
     </table>
   </div>
   <p class="tip">표의 칸을 누르면 잘못 읽힌 값을 고칠 수 있습니다.</p>
-  <p class="ver">v4 · 2026-10-23</p>
+  <p class="ver">v5 · 2026-10-23</p>
 </main>
 
-<script type="module">
-import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.6/dist/es/reader/index.js";
-
-const API_URL = "https://script.google.com/macros/s/AKfycbzI5YYwONxGtqOVYErxCwQB4wiOq2paodZHDo34hc1FekED9JwTP_agBJZh4Q8iTSQf/exec";  // 라벨 판독 Apps Script 웹앱 주소
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzI5YYwONxGtqOVYErxCwQB4wiOq2paodZHDo34hc1FekED9JwTP_agBJZh4Q8iTSQf/exec";
 const COLS = [["project","프로젝트명",20],["unit","UNIT명",14],["assy","ASSY명",22],["item","품명",14],["maker","Maker",8],
-  ["partNo","품번",13],["qty","수량",6],["note","비고",15],["spec","규격",18],["supplier","공급업체",10],["date","납품일자",11],
-  ["pjtNo","프로젝트번호",14],["itemSeq","품목코드",9]];
-const OPT = { formats:["QRCode"], tryHarder:true, tryRotate:true, tryInvert:true, tryDownscale:true, maxNumberOfSymbols:1 };
+  ["partNo","품번",13],["qty","수량",6],["note","비고",15],["spec","규격",18],["supplier","공급업체",10],["date","납품일자",11]];
 let rows = [];
 const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 $("th").innerHTML = "<tr><th>No</th>" + COLS.map(c => `<th>${c[1]}</th>`).join("") + "<th>사진</th></tr>";
 
-// QR: "PJTNo=..^TopUnitName=..^"
-function parseQR(text){
-  const o = {};
-  text.split("^").forEach(p => { const i = p.indexOf("="); if (i > 0) o[p.slice(0,i).trim()] = p.slice(i+1).trim(); });
-  return o.PJTNo || o.ItemSeq ? o : null;
-}
-
-// 사진을 1600px JPEG(base64)로 줄여서 전송
+// 사진을 1280px JPEG(base64)로 줄여서 전송
 async function toB64(file){
   const img = await createImageBitmap(file);
-  const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const k = Math.min(1, 1280 / Math.max(img.width, img.height));
   const c = document.createElement("canvas");
   c.width = img.width * k; c.height = img.height * k;
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.85).split(",")[1];
 }
 
-async function readAI(file){
-  if (!API_URL) return null;
-  try {
-    const res = await fetch(API_URL, { method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" },
-      body: JSON.stringify({ image: await toB64(file) }) });
-    const r = await res.json();
-    return r.ok ? r.data : null;
-  } catch(e){ return null; }
+// 한도 초과면 기다렸다 최대 3번 재시도
+async function readAI(b64, onWait){
+  let r = { ok:false, error:"연결 실패" };
+  for (let t = 0; t < 3; t++){
+    try {
+      const res = await fetch(API_URL, { method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" }, body: JSON.stringify({ image:b64 }) });
+      r = await res.json();
+    } catch(e){ r = { ok:false, error:"연결 실패" }; }
+    if (r.ok || (r.code && r.code !== 429)) return r;
+    if (t < 2) { onWait(); await sleep(15000); }
+  }
+  return r;
 }
 
 async function handle(files){
   const list = [...files];
   for (let i = 0; i < list.length; i++){
-    $("stat").textContent = `라벨 읽는 중… (${i+1}/${list.length})`;
-    let qr = null;
-    try { const r = await readBarcodes(list[i], OPT); if (r[0]) qr = parseQR(r[0].text); } catch(e){}
-    const ai = await readAI(list[i]);
+    const msg = `라벨 읽는 중… (${i+1}/${list.length})`;
+    $("stat").textContent = msg;
+    const r = await readAI(await toB64(list[i]), () => $("stat").textContent = msg + " 한도 대기 중, 잠시만요");
     let d = null;
-    if (ai || qr) {
-      d = {};
-      COLS.forEach(([k]) => d[k] = String(ai?.[k] ?? "").replace(/,\s*$/, "").trim());
-      if (qr) { // QR 값이 있으면 우선
-        d.unit = qr.TopUnitName || d.unit; d.assy = qr.UpperUnitName || d.assy;
-        d.qty = qr.Qty ? String(Number(qr.Qty)) : d.qty; d.pjtNo = qr.PJTNo || ""; d.itemSeq = qr.ItemSeq || "";
-      }
-    }
-    rows.push({ file:list[i].name, data:d, part: !!d && !ai });
+    if (r.ok) { d = {}; COLS.forEach(([k]) => d[k] = String(r.data?.[k] ?? "").replace(/,\s*$/, "").trim()); }
+    rows.push({ file:list[i].name, data:d, err:r.error || "" });
     render();
   }
 }
@@ -144,16 +130,16 @@ async function handle(files){
 function esc(s){ return String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 function render(){
-  const ok = rows.filter(r => r.data), bad = rows.length - ok.length, part = rows.filter(r => r.part).length;
+  const ok = rows.filter(r => r.data), bad = rows.length - ok.length;
   $("xls").disabled = $("share").disabled = !ok.length;
   $("stat").innerHTML = rows.length
-    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "") + (part ? ` · QR만 <em>${part}건</em>` : "")
+    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "")
     : "사진을 올리면 라벨을 읽어 표로 정리합니다.";
   let n = 0;
   $("tb").innerHTML = rows.length ? rows.map((r, ri) => r.data
-    ? `<tr${r.part ? ' class="part"' : ''}><td>${++n}</td>` + COLS.map(([k]) =>
+    ? `<tr><td>${++n}</td>` + COLS.map(([k]) =>
         `<td contenteditable data-r="${ri}" data-k="${k}"${k==="qty" ? ' class="n"' : ''}>${esc(r.data[k])}</td>`).join("") + `<td>${esc(r.file)}</td></tr>`
-    : `<tr class="fail"><td>-</td><td colspan="${COLS.length}">인식 실패 · 다시 찍어주세요</td><td>${esc(r.file)}</td></tr>`).join("")
+    : `<tr class="fail"><td>-</td><td colspan="${COLS.length}">인식 실패 · ${esc(r.err)}</td><td>${esc(r.file)}</td></tr>`).join("")
     : `<tr><td colspan="${COLS.length + 2}" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
 }
 render();
