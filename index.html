@@ -36,6 +36,8 @@ th{background:#eef6f5;color:var(--teal-d);font-weight:700;text-align:left;paddin
 td{padding:9px 12px;border-top:1px solid var(--line)}
 td.n{text-align:right}
 tr.fail td{color:var(--red);background:#fff6f6}
+tr.part td{background:#fffbea}
+td[contenteditable]:focus{outline:2px solid var(--teal);background:#f0faf8}
 .empty{padding:28px;text-align:center;color:var(--sub);font-size:14px}
 </style>
 </head>
@@ -70,53 +72,94 @@ tr.fail td{color:var(--red);background:#fff6f6}
 
   <div class="wrap">
     <table>
-      <thead><tr><th>No</th><th>프로젝트번호</th><th>UNIT명</th><th>ASSY명</th><th>품목코드</th><th>수량</th><th>사진</th></tr></thead>
-      <tbody id="tb"><tr><td colspan="7" class="empty">아직 올린 사진이 없습니다.</td></tr></tbody>
+      <thead id="th"></thead>
+      <tbody id="tb"></tbody>
     </table>
   </div>
+  <p class="tip">표의 칸을 누르면 잘못 읽힌 값을 고칠 수 있습니다.</p>
 </main>
 
 <script type="module">
 import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.6/dist/es/reader/index.js";
 
-const KEYS = { PJTNo:"프로젝트번호", TopUnitName:"UNIT명", UpperUnitName:"ASSY명", ItemSeq:"품목코드", Qty:"수량" };
+const API_URL = "";  // 라벨 판독 Apps Script 웹앱 주소
+const COLS = [["project","프로젝트명",20],["unit","UNIT명",14],["assy","ASSY명",22],["item","품명",14],["maker","Maker",8],
+  ["partNo","품번",13],["qty","수량",6],["note","비고",15],["spec","규격",18],["supplier","공급업체",10],["date","납품일자",11],
+  ["pjtNo","프로젝트번호",14],["itemSeq","품목코드",9]];
 const OPT = { formats:["QRCode"], tryHarder:true, tryRotate:true, tryInvert:true, tryDownscale:true, maxNumberOfSymbols:1 };
 let rows = [];
 const $ = id => document.getElementById(id);
+$("th").innerHTML = "<tr><th>No</th>" + COLS.map(c => `<th>${c[1]}</th>`).join("") + "<th>사진</th></tr>";
 
-// "PJTNo=..^TopUnitName=..^" → 객체
-function parse(text){
+// QR: "PJTNo=..^TopUnitName=..^"
+function parseQR(text){
   const o = {};
   text.split("^").forEach(p => { const i = p.indexOf("="); if (i > 0) o[p.slice(0,i).trim()] = p.slice(i+1).trim(); });
-  if (o.Qty) o.Qty = Number(o.Qty);
   return o.PJTNo || o.ItemSeq ? o : null;
+}
+
+// 사진을 1600px JPEG(base64)로 줄여서 전송
+async function toB64(file){
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = img.width * k; c.height = img.height * k;
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.85).split(",")[1];
+}
+
+async function readAI(file){
+  if (!API_URL) return null;
+  try {
+    const res = await fetch(API_URL, { method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" },
+      body: JSON.stringify({ image: await toB64(file) }) });
+    const r = await res.json();
+    return r.ok ? r.data : null;
+  } catch(e){ return null; }
 }
 
 async function handle(files){
   const list = [...files];
   for (let i = 0; i < list.length; i++){
-    $("stat").textContent = `QR 읽는 중… (${i+1}/${list.length})`;
-    let data = null;
-    try { const r = await readBarcodes(list[i], OPT); if (r[0]) data = parse(r[0].text); } catch(e){}
-    rows.push({ file:list[i].name, data });
+    $("stat").textContent = `라벨 읽는 중… (${i+1}/${list.length})`;
+    let qr = null;
+    try { const r = await readBarcodes(list[i], OPT); if (r[0]) qr = parseQR(r[0].text); } catch(e){}
+    const ai = await readAI(list[i]);
+    let d = null;
+    if (ai || qr) {
+      d = {};
+      COLS.forEach(([k]) => d[k] = String(ai?.[k] ?? "").replace(/,\s*$/, "").trim());
+      if (qr) { // QR 값이 있으면 우선
+        d.unit = qr.TopUnitName || d.unit; d.assy = qr.UpperUnitName || d.assy;
+        d.qty = qr.Qty ? String(Number(qr.Qty)) : d.qty; d.pjtNo = qr.PJTNo || ""; d.itemSeq = qr.ItemSeq || "";
+      }
+    }
+    rows.push({ file:list[i].name, data:d, part: !!d && !ai });
+    render();
   }
-  render();
 }
 
 function esc(s){ return String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 function render(){
-  const ok = rows.filter(r => r.data), bad = rows.length - ok.length;
+  const ok = rows.filter(r => r.data), bad = rows.length - ok.length, part = rows.filter(r => r.part).length;
   $("xls").disabled = $("share").disabled = !ok.length;
   $("stat").innerHTML = rows.length
-    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "")
-    : "사진을 올리면 QR을 읽어 표로 정리합니다.";
+    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "") + (part ? ` · QR만 <em>${part}건</em>` : "")
+    : "사진을 올리면 라벨을 읽어 표로 정리합니다.";
   let n = 0;
-  $("tb").innerHTML = rows.length ? rows.map(r => r.data
-    ? `<tr><td>${++n}</td><td>${esc(r.data.PJTNo)}</td><td>${esc(r.data.TopUnitName)}</td><td>${esc(r.data.UpperUnitName)}</td><td>${esc(r.data.ItemSeq)}</td><td class="n">${esc(r.data.Qty)}</td><td>${esc(r.file)}</td></tr>`
-    : `<tr class="fail"><td>-</td><td colspan="5">QR 인식 실패 · 다시 찍어주세요</td><td>${esc(r.file)}</td></tr>`).join("")
-    : `<tr><td colspan="7" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
+  $("tb").innerHTML = rows.length ? rows.map((r, ri) => r.data
+    ? `<tr${r.part ? ' class="part"' : ''}><td>${++n}</td>` + COLS.map(([k]) =>
+        `<td contenteditable data-r="${ri}" data-k="${k}"${k==="qty" ? ' class="n"' : ''}>${esc(r.data[k])}</td>`).join("") + `<td>${esc(r.file)}</td></tr>`
+    : `<tr class="fail"><td>-</td><td colspan="${COLS.length}">인식 실패 · 다시 찍어주세요</td><td>${esc(r.file)}</td></tr>`).join("")
+    : `<tr><td colspan="${COLS.length + 2}" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
 }
+render();
+
+// 표에서 직접 수정
+$("tb").addEventListener("input", e => {
+  const t = e.target.closest("td[data-k]"); if (t) rows[t.dataset.r].data[t.dataset.k] = t.textContent.trim();
+});
 
 ["file","cam"].forEach(id => $(id).onchange = e => { handle(e.target.files); e.target.value = ""; });
 const drop = $("drop");
@@ -128,12 +171,12 @@ $("clr").onclick = () => { rows = []; render(); };
 function book(){
   const data = rows.filter(r => r.data).map((r, i) => {
     const o = { "No": i+1 };
-    for (const k in KEYS) o[KEYS[k]] = r.data[k] ?? "";
+    COLS.forEach(([k, h]) => o[h] = k === "qty" && r.data.qty !== "" && !isNaN(r.data.qty) ? Number(r.data.qty) : r.data[k]);
     o["사진"] = r.file;
     return o;
   });
   const ws = XLSX.utils.json_to_sheet(data);
-  ws["!cols"] = [{wch:5},{wch:16},{wch:16},{wch:24},{wch:10},{wch:8},{wch:30}];
+  ws["!cols"] = [{wch:5}, ...COLS.map(c => ({wch:c[2]})), {wch:28}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "라벨");
   const d = new Date(), p = v => String(v).padStart(2,"0");
