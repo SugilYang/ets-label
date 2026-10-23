@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETS 입고 라벨 엑셀 변환</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--teal:#009381;--teal-d:#007465;--ink:#1f2a30;--sub:#66737a;--line:#e3e8ea;--bg:#f4f7f7;--red:#d64545}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Noto Sans KR',sans-serif;background:var(--bg);color:var(--ink);word-break:keep-all}
+header{background:#fff;border-bottom:3px solid var(--teal);padding:14px 16px;display:flex;align-items:center;gap:12px}
+header img{height:30px}
+header h1{font-size:17px;margin:0;font-weight:700}
+main{max-width:960px;margin:0 auto;padding:16px}
+.picks{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.drop{display:block;background:#fff;border:2px dashed #b9d9d4;border-radius:14px;padding:32px 16px;text-align:center;cursor:pointer;transition:.15s}
+.drop.on,.drop:hover{border-color:var(--teal);background:#f0faf8}
+.drop .ic{font-size:40px}
+.drop b{display:block;font-size:17px;margin:8px 0 4px}
+.drop span{color:var(--sub);font-size:14px;text-wrap:balance}
+.tip{text-align:center;color:var(--sub);font-size:13px;margin:10px 0 0}
+.kakao{background:#fee500;color:#191919;font-weight:700}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0 10px}
+.stat{flex:1 1 100%;font-size:14px;color:var(--sub)}
+.stat strong{color:var(--teal)}.stat em{color:var(--red);font-style:normal;font-weight:700}
+.bar button{flex:1;white-space:nowrap}
+button{font:inherit;font-size:15px;border:0;border-radius:10px;padding:11px 18px;cursor:pointer}
+.go{background:var(--teal);color:#fff;font-weight:700}.go:hover{background:var(--teal-d)}
+.go:disabled{background:#b8c4c6;cursor:default}
+.clr{background:#fff;color:var(--sub);border:1px solid var(--line)}
+.wrap{background:#fff;border-radius:14px;overflow-x:auto;border:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:14px;white-space:nowrap}
+th{background:#eef6f5;color:var(--teal-d);font-weight:700;text-align:left;padding:10px 12px}
+td{padding:9px 12px;border-top:1px solid var(--line)}
+td.n{text-align:right}
+tr.fail td{color:var(--red);background:#fff6f6}
+.empty{padding:28px;text-align:center;color:var(--sub);font-size:14px}
+</style>
+</head>
+<body>
+<header>
+  <img src="logo.png" alt="ETS">
+  <h1>입고 라벨 → 엑셀 변환</h1>
+</header>
+<main>
+  <div class="picks">
+    <label class="drop">
+      <input type="file" id="cam" accept="image/*" capture="environment" hidden>
+      <div class="ic">📷</div>
+      <b>카메라로 찍기</b>
+      <span>한 장씩 찍으면<br>표에 계속 쌓입니다</span>
+    </label>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="image/*" multiple hidden>
+      <div class="ic">🖼️</div>
+      <b>사진 선택</b>
+      <span>갤러리에서<br>여러 장 한 번에</span>
+    </label>
+  </div>
+  <p class="tip">라벨의 QR코드가 잘 보이게 찍어주세요.</p>
+
+  <div class="bar">
+    <div class="stat" id="stat">사진을 올리면 QR을 읽어 표로 정리합니다.</div>
+    <button class="clr" id="clr">비우기</button>
+    <button class="go" id="xls" disabled>엑셀 다운로드</button>
+    <button class="kakao" id="share" disabled>카톡으로 보내기</button>
+  </div>
+
+  <div class="wrap">
+    <table>
+      <thead><tr><th>No</th><th>프로젝트번호</th><th>UNIT명</th><th>ASSY명</th><th>품목코드</th><th>수량</th><th>사진</th></tr></thead>
+      <tbody id="tb"><tr><td colspan="7" class="empty">아직 올린 사진이 없습니다.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script type="module">
+import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.6/dist/es/reader/index.js";
+
+const KEYS = { PJTNo:"프로젝트번호", TopUnitName:"UNIT명", UpperUnitName:"ASSY명", ItemSeq:"품목코드", Qty:"수량" };
+const OPT = { formats:["QRCode"], tryHarder:true, tryRotate:true, tryInvert:true, tryDownscale:true, maxNumberOfSymbols:1 };
+let rows = [];
+const $ = id => document.getElementById(id);
+
+// "PJTNo=..^TopUnitName=..^" → 객체
+function parse(text){
+  const o = {};
+  text.split("^").forEach(p => { const i = p.indexOf("="); if (i > 0) o[p.slice(0,i).trim()] = p.slice(i+1).trim(); });
+  if (o.Qty) o.Qty = Number(o.Qty);
+  return o.PJTNo || o.ItemSeq ? o : null;
+}
+
+async function handle(files){
+  const list = [...files];
+  for (let i = 0; i < list.length; i++){
+    $("stat").textContent = `QR 읽는 중… (${i+1}/${list.length})`;
+    let data = null;
+    try { const r = await readBarcodes(list[i], OPT); if (r[0]) data = parse(r[0].text); } catch(e){}
+    rows.push({ file:list[i].name, data });
+  }
+  render();
+}
+
+function esc(s){ return String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function render(){
+  const ok = rows.filter(r => r.data), bad = rows.length - ok.length;
+  $("xls").disabled = $("share").disabled = !ok.length;
+  $("stat").innerHTML = rows.length
+    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "")
+    : "사진을 올리면 QR을 읽어 표로 정리합니다.";
+  let n = 0;
+  $("tb").innerHTML = rows.length ? rows.map(r => r.data
+    ? `<tr><td>${++n}</td><td>${esc(r.data.PJTNo)}</td><td>${esc(r.data.TopUnitName)}</td><td>${esc(r.data.UpperUnitName)}</td><td>${esc(r.data.ItemSeq)}</td><td class="n">${esc(r.data.Qty)}</td><td>${esc(r.file)}</td></tr>`
+    : `<tr class="fail"><td>-</td><td colspan="5">QR 인식 실패 · 다시 찍어주세요</td><td>${esc(r.file)}</td></tr>`).join("")
+    : `<tr><td colspan="7" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
+}
+
+["file","cam"].forEach(id => $(id).onchange = e => { handle(e.target.files); e.target.value = ""; });
+const drop = $("drop");
+["dragover","dragenter"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("on"); }));
+["dragleave","drop"].forEach(t => drop.addEventListener(t, () => drop.classList.remove("on")));
+drop.addEventListener("drop", e => { e.preventDefault(); handle(e.dataTransfer.files); });
+$("clr").onclick = () => { rows = []; render(); };
+
+function book(){
+  const data = rows.filter(r => r.data).map((r, i) => {
+    const o = { "No": i+1 };
+    for (const k in KEYS) o[KEYS[k]] = r.data[k] ?? "";
+    o["사진"] = r.file;
+    return o;
+  });
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws["!cols"] = [{wch:5},{wch:16},{wch:16},{wch:24},{wch:10},{wch:8},{wch:30}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "라벨");
+  const d = new Date(), p = v => String(v).padStart(2,"0");
+  return { wb, name:`입고라벨_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.xlsx` };
+}
+
+$("xls").onclick = () => { const { wb, name } = book(); XLSX.writeFile(wb, name); };
+
+// 휴대폰 공유 창(카카오톡 선택) — 지원 안 되면 다운로드로 대체
+$("share").onclick = async () => {
+  const { wb, name } = book();
+  const file = new File([XLSX.write(wb, { bookType:"xlsx", type:"array" })], name,
+    { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  if (navigator.canShare && navigator.canShare({ files:[file] })) {
+    try { await navigator.share({ files:[file], title:name }); } catch(e){}
+  } else {
+    XLSX.writeFile(wb, name);
+    alert("이 기기에서는 바로 공유가 안 됩니다.\n내려받은 엑셀 파일을 카톡으로 보내주세요.");
+  }
+};
+</script>
+</body>
+</html>
