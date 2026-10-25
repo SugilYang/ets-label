@@ -21,7 +21,7 @@ main{max-width:960px;margin:0 auto;padding:16px}
 .drop b{display:block;font-size:17px;margin:8px 0 4px}
 .drop span{color:var(--sub);font-size:14px;text-wrap:balance}
 .tip{text-align:center;color:var(--sub);font-size:13px;margin:10px 0 0}
-.ver{text-align:center;color:#a4b0b4;font-size:12px;margin:18px 0 0}
+.ver{color:#a4b0b4}
 .kakao{background:#fee500;color:#191919;font-weight:700}
 .bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0 10px}
 .stat{flex:1 1 100%;font-size:14px;color:var(--sub)}
@@ -40,6 +40,19 @@ tr.fail td{color:var(--red);background:#fff6f6}
 tr.part td{background:#fffbea}
 td[contenteditable]:focus{outline:2px solid var(--teal);background:#f0faf8}
 .empty{padding:28px;text-align:center;color:var(--sub);font-size:14px}
+td.warn{background:#fff4c2}
+td.dup{background:#ffe1c7;color:#a34a00;font-weight:700}
+tr.wait td{color:var(--sub)}
+.stat .w{color:#b38600;font-weight:700}.stat .d{color:#c25e00;font-weight:700}
+.no{display:flex;align-items:center;gap:6px}
+.del{background:none;border:0;padding:2px 4px;color:#b0babd;font-size:16px;line-height:1}
+.del:hover{color:var(--red)}
+.th{width:44px;height:44px;object-fit:cover;border-radius:6px;cursor:zoom-in;vertical-align:middle;border:1px solid var(--line)}
+.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 14px;font-size:12px;color:var(--sub);margin:10px 0 0}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+.modal{position:fixed;inset:0;background:rgba(10,20,24,.85);display:none;align-items:center;justify-content:center;padding:16px;z-index:9}
+.modal.on{display:flex}.modal img{max-width:100%;max-height:100%;border-radius:8px}
+footer{text-align:center;color:var(--sub);font-size:12px;line-height:1.7;margin:22px 0 8px}
 </style>
 </head>
 <body>
@@ -77,9 +90,10 @@ td[contenteditable]:focus{outline:2px solid var(--teal);background:#f0faf8}
       <tbody id="tb"></tbody>
     </table>
   </div>
-  <p class="tip">표의 칸을 누르면 잘못 읽힌 값을 고칠 수 있습니다.</p>
-  <p class="ver">v5 · 2026-10-23</p>
+  <div class="legend"><span><i style="background:#fff4c2"></i>확인 필요</span><span><i style="background:#ffe1c7"></i>품번 중복</span><span>칸을 누르면 수정 · 사진을 누르면 크게 보기</span></div>
+  <footer>기획·개발 환경안전팀 양수길 책임 · 010-3469-2346<br><span class="ver">v6 · 2026-10-25</span></footer>
 </main>
+<div class="modal" id="modal"><img id="big" alt="라벨 사진"></div>
 
 <script>
 const API_URL = "https://script.google.com/macros/s/AKfycbzI5YYwONxGtqOVYErxCwQB4wiOq2paodZHDo34hc1FekED9JwTP_agBJZh4Q8iTSQf/exec";
@@ -88,7 +102,7 @@ const COLS = [["project","프로젝트명",20],["unit","UNIT명",14],["assy","AS
 let rows = [];
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-$("th").innerHTML = "<tr><th>No</th>" + COLS.map(c => `<th>${c[1]}</th>`).join("") + "<th>사진</th></tr>";
+$("th").innerHTML = "<tr><th>No</th><th>사진</th>" + COLS.map(c => `<th>${c[1]}</th>`).join("") + "</tr>";
 
 // 사진을 1280px JPEG(base64)로 줄여서 전송
 async function toB64(file){
@@ -114,50 +128,99 @@ async function readAI(b64, onWait){
   return r;
 }
 
+let seq = 0;
+const PAR = 2;  // 동시 처리 장수
+
 async function handle(files){
-  const list = [...files];
-  for (let i = 0; i < list.length; i++){
-    const msg = `라벨 읽는 중… (${i+1}/${list.length})`;
-    $("stat").textContent = msg;
-    const r = await readAI(await toB64(list[i]), () => $("stat").textContent = msg + " 한도 대기 중, 잠시만요");
-    let d = null;
-    if (r.ok) { d = {}; COLS.forEach(([k]) => d[k] = String(r.data?.[k] ?? "").replace(/,\s*$/, "").trim()); }
-    rows.push({ file:list[i].name, data:d, err:r.error || "" });
-    render();
-  }
+  const added = [...files].map(f => ({ id:++seq, file:f.name, blob:f, url:URL.createObjectURL(f), st:"wait", msg:"대기 중" }));
+  if (!added.length) return;
+  rows.push(...added);
+  render();
+  let i = 0;
+  const worker = async () => {
+    while (i < added.length){
+      const r = added[i++];
+      if (!rows.includes(r)) continue;          // 처리 전에 삭제된 행
+      setRow(r, "wait", "읽는 중…");
+      const res = await readAI(await toB64(r.blob), () => setRow(r, "wait", "한도 대기 중…"));
+      if (res.ok) { r.data = {}; COLS.forEach(([k]) => r.data[k] = String(res.data?.[k] ?? "").replace(/,\s*$/, "").trim()); r.st = "ok"; }
+      else { r.st = "fail"; r.msg = res.error || "판독 실패"; }
+      delete r.blob;
+      if (rows.includes(r)) render();
+    }
+  };
+  await Promise.all(Array.from({ length:Math.min(PAR, added.length) }, worker));
 }
 
-function esc(s){ return String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function setRow(r, st, msg){ r.st = st; r.msg = msg; const tr = document.querySelector(`tr[data-id="${r.id}"] .msg`); if (tr) tr.textContent = msg; }
+
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+// 확인이 필요한 값
+function bad(k, v){
+  if (k === "partNo") return !/^PUR-\d+$/i.test(v);
+  if (k === "qty")    return !/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0;
+  if (k === "date")   return !/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v));
+  if (k === "item")   return !v;
+  return false;
+}
+
+// 노란색(확인 필요) · 주황색(품번 중복) 칠하기 + 상단 집계
+function paint(){
+  const ok = rows.filter(r => r.st === "ok");
+  const cnt = {}; ok.forEach(r => { const p = r.data.partNo.toUpperCase(); if (p) cnt[p] = (cnt[p] || 0) + 1; });
+  let warn = 0, dup = 0;
+  document.querySelectorAll("#tb td[data-k]").forEach(td => {
+    const r = rows.find(x => x.id == td.dataset.id), k = td.dataset.k, v = r.data[k];
+    const isDup = k === "partNo" && v && cnt[v.toUpperCase()] > 1, isBad = bad(k, v);
+    td.classList.toggle("dup", isDup); td.classList.toggle("warn", isBad && !isDup);
+    if (isDup) dup++; if (isBad) warn++;
+  });
+  const fail = rows.filter(r => r.st === "fail").length, wait = rows.filter(r => r.st === "wait").length;
+  $("xls").disabled = $("share").disabled = !ok.length;
+  $("stat").innerHTML = !rows.length ? "사진을 올리면 라벨을 읽어 표로 정리합니다."
+    : `인식 <strong>${ok.length}건</strong>` + (wait ? ` · 읽는 중 ${wait}건` : "") + (warn ? ` · <span class="w">확인 필요 ${warn}칸</span>` : "")
+      + (dup ? ` · <span class="d">중복 ${dup}건</span>` : "") + (fail ? ` · 실패 <em>${fail}건</em>` : "");
+}
 
 function render(){
-  const ok = rows.filter(r => r.data), bad = rows.length - ok.length;
-  $("xls").disabled = $("share").disabled = !ok.length;
-  $("stat").innerHTML = rows.length
-    ? `인식 <strong>${ok.length}건</strong>` + (bad ? ` · 실패 <em>${bad}건</em>` : "")
-    : "사진을 올리면 라벨을 읽어 표로 정리합니다.";
-  let n = 0;
-  $("tb").innerHTML = rows.length ? rows.map((r, ri) => r.data
-    ? `<tr><td>${++n}</td>` + COLS.map(([k]) =>
-        `<td contenteditable data-r="${ri}" data-k="${k}"${k==="qty" ? ' class="n"' : ''}>${esc(r.data[k])}</td>`).join("") + `<td>${esc(r.file)}</td></tr>`
-    : `<tr class="fail"><td>-</td><td colspan="${COLS.length}">인식 실패 · ${esc(r.err)}</td><td>${esc(r.file)}</td></tr>`).join("")
-    : `<tr><td colspan="${COLS.length + 2}" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
+  const n = COLS.length;
+  $("tb").innerHTML = rows.length ? rows.map((r, ri) => {
+    const no = `<td><span class="no"><button class="del" data-del="${r.id}" title="삭제">✕</button>${ri+1}</span></td>`;
+    const ph = `<td><img class="th" src="${r.url}" data-big="${r.id}" alt=""></td>`;
+    if (r.st === "ok") return `<tr data-id="${r.id}">${no}${ph}` + COLS.map(([k]) =>
+      `<td contenteditable data-id="${r.id}" data-k="${k}"${k==="qty" ? ' class="n"' : ''}>${esc(r.data[k])}</td>`).join("") + "</tr>";
+    return `<tr data-id="${r.id}" class="${r.st}">${no}${ph}<td colspan="${n}">${r.st === "fail" ? "인식 실패 · " : ""}<span class="msg">${esc(r.msg)}</span></td></tr>`;
+  }).join("") : `<tr><td colspan="${n + 2}" class="empty">아직 올린 사진이 없습니다.</td></tr>`;
+  paint();
 }
 render();
 
 // 표에서 직접 수정
 $("tb").addEventListener("input", e => {
-  const t = e.target.closest("td[data-k]"); if (t) rows[t.dataset.r].data[t.dataset.k] = t.textContent.trim();
+  const t = e.target.closest("td[data-k]"); if (!t) return;
+  rows.find(x => x.id == t.dataset.id).data[t.dataset.k] = t.textContent.trim();
+  paint();
 });
+
+// 행 삭제 · 사진 크게 보기
+$("tb").addEventListener("click", e => {
+  const d = e.target.closest("[data-del]");
+  if (d) { const r = rows.find(x => x.id == d.dataset.del); URL.revokeObjectURL(r.url); rows = rows.filter(x => x !== r); render(); return; }
+  const b = e.target.closest("[data-big]");
+  if (b) { $("big").src = b.src; $("modal").classList.add("on"); }
+});
+$("modal").onclick = () => $("modal").classList.remove("on");
 
 ["file","cam"].forEach(id => $(id).onchange = e => { handle(e.target.files); e.target.value = ""; });
 const drop = $("drop");
 ["dragover","dragenter"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("on"); }));
 ["dragleave","drop"].forEach(t => drop.addEventListener(t, () => drop.classList.remove("on")));
 drop.addEventListener("drop", e => { e.preventDefault(); handle(e.dataTransfer.files); });
-$("clr").onclick = () => { rows = []; render(); };
+$("clr").onclick = () => { if (rows.length && !confirm("표를 모두 비울까요?")) return; rows.forEach(r => URL.revokeObjectURL(r.url)); rows = []; render(); };
 
 function book(){
-  const data = rows.filter(r => r.data).map((r, i) => {
+  const data = rows.filter(r => r.st === "ok").map((r, i) => {
     const o = { "No": i+1 };
     COLS.forEach(([k, h]) => o[h] = k === "qty" && r.data.qty !== "" && !isNaN(r.data.qty) ? Number(r.data.qty) : r.data[k]);
     o["사진"] = r.file;
