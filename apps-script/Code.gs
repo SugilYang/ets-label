@@ -20,6 +20,7 @@ const PROMPT = `사진은 한국 제조사 입고 부품 라벨입니다. 표의
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
+    if (body.action === 'mail') return sendMail(body);
     const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     if (!key) return out({ ok: false, error: '키 미설정(GEMINI_API_KEY)' });
     const payload = JSON.stringify({
@@ -51,6 +52,26 @@ function doPost(e) {
   } catch (err) {
     return out({ ok: false, error: '판독 실패: ' + String(err.message || err).slice(0, 120) });
   }
+}
+
+// 엑셀 첨부 메일 발송 (본인 Gmail 계정으로 발송, 무료 계정은 하루 100통)
+function sendMail(b) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.to || '')) return out({ ok: false, error: '이메일 주소 오류' });
+  if (!/\.xlsx$/.test(b.name || '') || !b.file) return out({ ok: false, error: '첨부 파일 오류' });
+  const when = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm');
+  try {
+  MailApp.sendEmail({
+    to: b.to,
+    subject: '[ETS 입고라벨] ' + when + ' (' + (b.count || 0) + '건)',
+    body: '입고 라벨 ' + (b.count || 0) + '건을 엑셀로 정리한 파일입니다.\n\n- 보낸 곳: sugilyang.github.io/ets-label',
+    name: 'ETS 입고라벨',
+    attachments: [Utilities.newBlob(Utilities.base64Decode(b.file),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', b.name)]
+  });
+  } catch (err) {
+    return out({ ok: false, error: '메일 발송 실패: ' + String(err.message || err).slice(0, 120) });
+  }
+  return out({ ok: true });
 }
 
 function out(o) {
