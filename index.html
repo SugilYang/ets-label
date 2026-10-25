@@ -22,6 +22,10 @@ main{max-width:960px;margin:0 auto;padding:16px}
 .drop span{color:var(--sub);font-size:14px;text-wrap:balance}
 .tip{text-align:center;color:var(--sub);font-size:13px;margin:10px 0 0}
 .ver{color:#a4b0b4}
+.prog{flex:1 1 100%;display:none;position:relative;height:30px;border-radius:10px;background:#e3efed;overflow:hidden}
+.prog.on{display:block}
+.prog i{position:absolute;inset:0 auto 0 0;width:0;background:linear-gradient(90deg,#7fd6c9,#4fc2b1);transition:width .3s}
+.prog span{position:relative;display:block;text-align:center;line-height:30px;font-size:14px;font-weight:700;color:#073b34}
 .mailbtn{background:#2f6fdb;color:#fff;font-weight:700}.mailbtn:disabled{background:#b8c4c6;cursor:default}
 .mailrow{display:flex;gap:8px;flex:1 1 100%}
 .mailrow input{flex:1;min-width:0;font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
@@ -82,6 +86,7 @@ footer{text-align:center;color:var(--sub);font-size:12px;line-height:1.7;margin:
 
   <div class="bar">
     <div class="stat" id="stat">사진을 올리면 라벨을 읽어 표로 정리합니다.</div>
+    <div class="prog" id="prog"><i id="progBar"></i><span id="progTxt"></span></div>
     <button class="clr" id="clr">비우기</button>
     <button class="go" id="xls" disabled>엑셀 다운로드</button>
     <div class="mailrow">
@@ -97,7 +102,7 @@ footer{text-align:center;color:var(--sub);font-size:12px;line-height:1.7;margin:
     </table>
   </div>
   <div class="legend"><span><i style="background:#fff4c2"></i>확인 필요</span><span><i style="background:#ffe1c7"></i>품번 중복</span><span>칸을 누르면 수정 · 사진을 누르면 크게 보기</span></div>
-  <footer>기획·개발 환경안전팀 양수길 책임 · 010-3469-2346<br><span class="ver">v8 · 2026-10-25</span></footer>
+  <footer>기획·개발 환경안전팀 양수길 책임 · 010-3469-2346<br><span class="ver">v9 · 2026-10-25</span></footer>
 </main>
 <div class="modal" id="modal"><img id="big" alt="라벨 사진"></div>
 
@@ -183,7 +188,12 @@ function paint(){
     if (isDup) dup++; if (isBad) warn++;
   });
   const fail = rows.filter(r => r.st === "fail").length, wait = rows.filter(r => r.st === "wait").length;
-  $("xls").disabled = $("send").disabled = !ok.length;
+  // 모두 읽기 전에는 다운로드·메일 버튼 잠금 + 진행률 표시
+  const done = rows.length - wait, pct = rows.length ? Math.round(done / rows.length * 100) : 0;
+  $("prog").classList.toggle("on", wait > 0);
+  $("progBar").style.width = pct + "%";
+  $("progTxt").textContent = `라벨 읽는 중 ${done}/${rows.length} (${pct}%)`;
+  $("xls").disabled = $("send").disabled = wait > 0 || !ok.length;
   $("stat").innerHTML = !rows.length ? "사진을 올리면 라벨을 읽어 표로 정리합니다."
     : `인식 <strong>${ok.length}건</strong>` + (wait ? ` · 읽는 중 ${wait}건` : "") + (warn ? ` · <span class="w">확인 필요 ${warn}칸</span>` : "")
       + (dup ? ` · <span class="d">중복 ${dup}건</span>` : "") + (fail ? ` · 실패 <em>${fail}건</em>` : "");
